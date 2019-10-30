@@ -5,13 +5,21 @@
 #import "LHDefinition.h"
 
 @interface RNReactNativePing ()
-@property (nonatomic,strong) dispatch_queue_t queue;
+@property (nonatomic, strong) dispatch_queue_t queue;
+@property (nonatomic, strong) GBPing* ping;
+
 @end
 
 @implementation RNReactNativePing
 
 
 RCT_EXPORT_MODULE()
+
+- (NSArray<NSString *> *)supportedEvents
+{
+  return @[@"PingEvent"];
+}
+
 - (dispatch_queue_t)methodQueue
 {
     if (!_queue) {
@@ -20,75 +28,80 @@ RCT_EXPORT_MODULE()
     return _queue;
 }
 
-RCT_EXPORT_METHOD(
-                  start:(NSString *)ipAddress
+RCT_EXPORT_METHOD(start:(NSString *)host
+                  count:(NSNumber *)count
                   option:(NSDictionary *)option
                   resolver:(RCTPromiseResolveBlock)resolve
-                  rejecter:(RCTPromiseRejectBlock)reject
-                  ) {
-    __block GBPing * ping = [[GBPing alloc] init];
-    ping.timeout = 1.0;
-    ping.pingPeriod = 0.9;
-    ping.host = ipAddress;
-    NSNumber *nsTimeout = option[@"timeout"];
-    unsigned long long timeout = 1000.0;
-    if (nsTimeout) {
-        timeout = nsTimeout.unsignedLongLongValue;
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    
+    self.ping = [[GBPing alloc] init];
+    self.ping.host = host;
+    
+    NSNumber *pingPeriod = option[@"pingPeriod"];
+    if (pingPeriod) {
+        self.ping.pingPeriod = [pingPeriod doubleValue];
     }
     
+    NSNumber *timeout = option[@"timeout"];
+    if (timeout) {
+        self.ping.timeout = [timeout doubleValue];
+    }
+    
+    NSNumber *payloadSize = option[@"payloadSize"];
+    if (payloadSize) {
+        self.ping.payloadSize = [payloadSize intValue];
+    }
+    
+    NSNumber *ttl = option[@"ttl"];
+    if (ttl) {
+        self.ping.ttl = [ttl intValue];
+    }
+        
 
-    [ping setupWithBlock:^(BOOL success, NSError *_Nullable err) {
+    __weak RNReactNativePing *weakSelf = self;
+    [self.ping setupWithBlock:^(BOOL success, NSError *_Nullable err) {
         if (!success) {
             reject(@(err.code).stringValue,err.domain,err);
             return;
         }
-        [ping startPingingWithBlock:^(GBPingSummary *summary) {
-            if (!ping) {
+
+        [weakSelf.ping startPingingWithBlock:^(GBPingSummary *summary) {
+            if (!weakSelf.ping) {
                 return;
             }
-            resolve(@(@(summary.rtt * 1000).intValue));
-            [ping stop];
-            ping = nil;
+            
+            [self sendEventWithName:@"PingEvent" body:@{@"sequenceNumber": @(summary.sequenceNumber),
+                                                        @"ttl": @(summary.ttl),
+                                                        @"rtt": @(summary.rtt),
+                                                        @"status": [RNReactNativePing stringStatus: summary.status]}];
+            
         } fail:^(NSError *_Nonnull error) {
-            if (!ping) {
+            if (!weakSelf.ping) {
                 return;
             }
             reject(@(error.code).stringValue,error.domain,error);
-            [ping stop];
-            ping = nil;
+            [weakSelf.ping stop];
+            weakSelf.ping = nil;
         }];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_MSEC)), _queue, ^{
-            if (!ping) {
-                return;
-            }
-            ping = nil;
-            DEFINE_NSError(timeoutError,PingUtil_Message_Timeout)
-            reject(@(timeoutError.code).stringValue,timeoutError.domain,timeoutError);
-        });
+        
+        resolve(@(YES));
     }];
 }
-RCT_REMAP_METHOD(
-                 getTrafficStats,
-                 resolver:(RCTPromiseResolveBlock)resolve
-                 rejecter:(RCTPromiseRejectBlock)reject
-                 ) {
-    // Prevent multiple calls from causing data confusion
-    LHNetwork *instance = [[LHNetwork alloc]init];
-    
-    [instance checkNetworkflow];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), _queue, ^{
-        [instance checkNetworkflow];
-        
-        NSString *receivedNetworkSpeed = instance.receivedNetworkSpeed;
-        NSString *receivedNetworkTotal = instance.receivedNetworkTotal;
-        NSString *sendNetworkSpeed = instance.sendNetworkSpeed;
-        NSString *sendNetworkTotal = instance.sendNetworkTotal;
-        resolve(@{
-                  @"receivedNetworkSpeed": receivedNetworkSpeed,
-                  @"receivedNetworkTotal": receivedNetworkTotal,
-                  @"sendNetworkSpeed": sendNetworkSpeed,
-                  @"sendNetworkTotal": sendNetworkTotal
-                  });
-    });
+
+RCT_EXPORT_METHOD(stop) {
+    [self.ping stop];
+    self.ping = nil;
 }
+
++ (NSString*)stringStatus: (GBPingStatus) status {
+    switch (status) {
+        case GBPingStatusPending:
+            return @"Pending";
+        case GBPingStatusSuccess:
+            return @"Success";
+        case GBPingStatusFail:
+            return @"Fail";
+    }
+}
+
 @end

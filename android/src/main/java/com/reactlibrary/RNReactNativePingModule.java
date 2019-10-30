@@ -1,8 +1,9 @@
 
 package com.reactlibrary;
 
-import android.net.TrafficStats;
+import android.annotation.SuppressLint;
 import android.os.Handler;
+import android.os.Message;
 
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Promise;
@@ -11,110 +12,123 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.modules.core.DeviceEventManagerModule;
+
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 
 public class RNReactNativePingModule extends ReactContextBaseJavaModule {
+
     private final String TIMEOUT_KEY = "timeout";
-    private final ReactApplicationContext reactContext;
+    private final Integer DEFAULT_TIMEOUT = 2000;
+
+    private static final int ERROR = 100;
+    private static final int PING = 101;
+
+    private static Handler handlerThread;
+
 
     public RNReactNativePingModule(ReactApplicationContext reactContext) {
         super(reactContext);
-        this.reactContext = reactContext;
     }
 
+    @SuppressLint("HandlerLeak")
     @ReactMethod
-    public void start(final String ipAddress, ReadableMap option, final Promise promise) {
-        if (ipAddress == null || (ipAddress != null && ipAddress.length() == 0)) {
-            LHDefinition.PING_ERROR_CODE error = LHDefinition.PING_ERROR_CODE.HostErrorNotSetHost;
-            promise.reject(error.getCode(), error.getMessage());
-            return;
-        }
+    public void start(final String host, final Integer count, ReadableMap option, final Promise promise) {
 
-        final boolean[] isFinish = {false};
-        int timeout = 1000;
-        if (option.hasKey(TIMEOUT_KEY)) {
-            timeout = option.getInt(TIMEOUT_KEY);
-        }
-        final int finalTimeout = timeout;
-        new Handler().post(new Runnable() {
+        final Integer timeout = option.hasKey(TIMEOUT_KEY) ?  option.getInt(TIMEOUT_KEY) :  DEFAULT_TIMEOUT;
+
+        handlerThread = new Handler(){
+            @Override
+            public void handleMessage(Message msg) {
+                super.handleMessage(msg);
+                if (msg.what == ERROR){
+                    LHDefinition.PING_ERROR_CODE error = LHDefinition.PING_ERROR_CODE.HostErrorUnknown;
+                    promise.reject(error.getCode(), error.getMessage());
+                }
+                else if(msg.what == PING){
+                    String line = (String) msg.obj;
+
+                    // looking for something like: 64 bytes from 172.217.16.14: icmp_seq=0 ttl=54 time=30.229 ms
+                    if (line != null) {
+                        int snIndex  = line.indexOf("icmp_seq=");
+
+                        if (snIndex > 0) {
+
+                            int ttlIndex  = line.indexOf("ttl=");
+                            int rttIndex  = line.indexOf("time=");
+                            int msIndex  = line.indexOf("ms");
+
+                            if (rttIndex > 0) {
+                                Integer sn = Integer.parseInt(line.substring(snIndex + 9, ttlIndex - 1));
+                                Integer ttl = Integer.parseInt(line.substring(ttlIndex + 4, rttIndex - 1));
+                                Double rtt = Double.parseDouble(line.substring(rttIndex + 5, msIndex - 1));
+                                sendEvent(sn, ttl, rtt, "Success");
+                            } else {
+                                sendEvent(-1, -1, 0.0, "Fail");
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
-                    if (isFinish[0]) {
-                        return;//Prevent multiple calls
+                    String command =  createSimplePingCommand(count, timeout, host);
+
+                    Process process = Runtime.getRuntime().exec(command);
+                    InputStream is = process.getInputStream();
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(is));
+                    String line;
+                    while (reader.ready() && null != (line = reader.readLine())) {
+                        Message message = new Message();
+                        message.arg1 = PING;
+                        message.obj = line;
+
+                        handlerThread.sendMessage(message);
                     }
-                    int rtt = PingUtil.getAvgRTT(ipAddress, 1, finalTimeout);
-                    promise.resolve(Integer.valueOf(rtt));
-                    isFinish[0] = true;
+                    reader.close();
+                    is.close();
                 } catch (Exception e) {
-                    if (isFinish[0]) {//Prevent multiple calls
-                        return;
-                    }
-                    LHDefinition.PING_ERROR_CODE error =
-                            LHDefinition.PING_ERROR_CODE.HostErrorUnknown;
-                    promise.reject(error.getCode(), error.getMessage());
-                    isFinish[0] = true;
+                    Message message = new Message();
+                    message.arg1 = ERROR;
+
+                    handlerThread.sendMessage(message);
                 }
             }
-        });
+        }).start();
 
-        new Handler().postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (isFinish[0]) {//Prevent multiple calls
-                    return;
-                }
-                LHDefinition.PING_ERROR_CODE error = LHDefinition.PING_ERROR_CODE.Timeout;
-                promise.reject(error.getCode(), error.getMessage());
-                isFinish[0] = true;
-            }
-        }, timeout);
-
+        promise.resolve("Success");
     }
 
     @ReactMethod
-    public void getTrafficStats(final Promise promise) {
-        final long receiveTotal = TrafficStats.getTotalRxBytes();
-        final long sendTotal = TrafficStats.getTotalTxBytes();
-        final String receivedNetworkTotal = bytesToAvaiUnit(receiveTotal);
-        final String sendNetworkTotal = bytesToAvaiUnit(sendTotal);
-
-        new Handler().postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                long newReceivedTotal = TrafficStats.getTotalRxBytes();
-                long newSendTotal = TrafficStats.getTotalTxBytes();
-
-                String receivedNetworkSpeed = bytesToAvaiUnit(newReceivedTotal - receiveTotal) +
-                        "/s";
-                String sendNetworkSpeed = bytesToAvaiUnit(newSendTotal - sendTotal) + "/s";
-                WritableMap map = Arguments.createMap();
-
-                map.putString("receivedNetworkTotal", receivedNetworkTotal);
-                map.putString("sendNetworkTotal", sendNetworkTotal);
-                map.putString("receivedNetworkSpeed", receivedNetworkSpeed);
-                map.putString("sendNetworkSpeed", sendNetworkSpeed);
-
-                promise.resolve(map);
-            }
-        }, 1000);
-
+    public void stop() {
+        // TODO: implement
     }
 
-    String bytesToAvaiUnit(long bytes) {
+    private static String createSimplePingCommand(int count, int timeout, String domain) {
+        return "/system/bin/ping -c " + count + " -w " + timeout + " " + domain;
+    }
 
-        if (bytes < 1024) {   // B
-            return bytes + "B";
-        } else if (bytes >= 1024 && bytes < 1024 * 1024) { // KB
-            return String.format("%.1fKB", bytes / 1024.0);
-        } else if (bytes >= 1024 * 1024 && bytes < 1024 * 1024 * 1024) { // MB
-            return String.format("%.1fMB", bytes / (1024 * 1024.0));
-        } else { // GB
-            return String.format("%.1fGB", bytes / (1024 * 1024 * 1024.0));
-        }
+    private void sendEvent(Integer sequenceNumber, Integer ttl, Double rtt, String status) {
+        WritableMap params = Arguments.createMap();
+        params.putInt("sequenceNumber", sequenceNumber);
+        params.putInt("ttl", ttl);
+        params.putDouble("rtt", rtt);
+        params.putString("status", status);
+
+        getReactApplicationContext()
+                .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+                .emit("PingEvent", params);
     }
 
     @Override
     public String getName() {
         return "RNReactNativePing";
     }
+
 }
