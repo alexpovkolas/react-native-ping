@@ -37,8 +37,6 @@ public class RNReactNativePingModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void start(final String host, final Integer count, ReadableMap option, final Promise promise) {
 
-        final Integer timeout = option.hasKey(TIMEOUT_KEY) ?  option.getInt(TIMEOUT_KEY) :  DEFAULT_TIMEOUT;
-
         handlerThread = new Handler(){
             @Override
             public void handleMessage(Message msg) {
@@ -78,24 +76,42 @@ public class RNReactNativePingModule extends ReactContextBaseJavaModule {
             @Override
             public void run() {
                 try {
-                    String command =  createSimplePingCommand(count, timeout, host);
+                    String command =  createSimplePingCommand(count, host);
 
                     Process process = Runtime.getRuntime().exec(command);
                     InputStream is = process.getInputStream();
                     BufferedReader reader = new BufferedReader(new InputStreamReader(is));
                     String line;
-                    while (reader.ready() && null != (line = reader.readLine())) {
-                        Message message = new Message();
-                        message.arg1 = PING;
-                        message.obj = line;
+                    while (true) {
+                        while (reader.ready() && null != (line = reader.readLine())) {
+                            Message message = new Message();
+                            message.what = PING;
+                            message.obj = line;
 
-                        handlerThread.sendMessage(message);
+                            handlerThread.sendMessage(message);
+                        }
+
+                        try {
+                            int exitCode = process.exitValue();
+                            if (exitCode > 0) {
+                                Message message = new Message();
+                                message.what = ERROR;
+                                handlerThread.sendMessage(message);
+                            }
+                            reader.close();
+                            is.close();
+                            // if we get here then the process finished executing
+                            break;
+                        } catch (IllegalThreadStateException ex) {
+                            // ignore
+                        }
+
+                        Thread.sleep(200);
                     }
-                    reader.close();
-                    is.close();
+
                 } catch (Exception e) {
                     Message message = new Message();
-                    message.arg1 = ERROR;
+                    message.what = ERROR;
 
                     handlerThread.sendMessage(message);
                 }
@@ -110,8 +126,8 @@ public class RNReactNativePingModule extends ReactContextBaseJavaModule {
         // TODO: implement
     }
 
-    private static String createSimplePingCommand(int count, int timeout, String domain) {
-        return "/system/bin/ping -c " + count + " -w " + timeout + " " + domain;
+    private static String createSimplePingCommand(int count, String domain) {
+        return "/system/bin/ping -c " + count + " " + domain;
     }
 
     private void sendEvent(Integer sequenceNumber, Integer ttl, Double rtt, String status) {
