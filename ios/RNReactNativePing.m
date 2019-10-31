@@ -29,7 +29,7 @@ RCT_EXPORT_MODULE()
 }
 
 RCT_EXPORT_METHOD(start:(NSString *)host
-                  count:(NSNumber *)count
+                  count:(nonnull NSNumber * )count
                   option:(NSDictionary *)option
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject) {
@@ -56,8 +56,7 @@ RCT_EXPORT_METHOD(start:(NSString *)host
     if (ttl) {
         self.ping.ttl = [ttl intValue];
     }
-        
-
+    
     __weak RNReactNativePing *weakSelf = self;
     [self.ping setupWithBlock:^(BOOL success, NSError *_Nullable err) {
         if (!success) {
@@ -65,16 +64,21 @@ RCT_EXPORT_METHOD(start:(NSString *)host
             return;
         }
 
+        __block int pingCouter = [count intValue];
         [weakSelf.ping startPingingWithBlock:^(GBPingSummary *summary) {
             if (!weakSelf.ping) {
                 return;
             }
             
-            [self sendEventWithName:@"PingEvent" body:@{@"sequenceNumber": @(summary.sequenceNumber),
+            pingCouter--;
+            if (pingCouter == 0) {
+                [weakSelf.ping stop];
+            }
+            
+            [weakSelf sendEventWithName:@"PingEvent" body:@{@"sequenceNumber": @(summary.sequenceNumber),
                                                         @"ttl": @(summary.ttl),
                                                         @"rtt": @(summary.rtt),
                                                         @"status": [RNReactNativePing stringStatus: summary.status]}];
-            
         } fail:^(NSError *_Nonnull error) {
             if (!weakSelf.ping) {
                 return;
