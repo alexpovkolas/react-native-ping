@@ -1,7 +1,7 @@
 import { NativeModules, NativeEventEmitter } from 'react-native';
 const { RNReactNativePing } = NativeModules;
 
-export default class Ping {
+export class Ping {
 
   constructor(host, count, options){
     this.host = host;
